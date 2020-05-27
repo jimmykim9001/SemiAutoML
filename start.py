@@ -222,15 +222,32 @@ class Model:
                 'history': f'{self.path}_feat_history.png'
             }
 
+    def generate_feat_params(self):
+        if not self.has_feat_imp:
+            return []
+        feat_params = []
+        for i in range(self.cv_obj.n_splits):
+            idx_best_params = np.argmin(self.results[f'test{i}_score'].to_numpy())
+            params = self.results['params'].iloc[idx_best_params]
+
+            # set new params (with feature_selection)
+            new_params = {}
+            for key in params:
+                new_params[f"feature_selection__{key.replace(self.prefix, 'estimator')}"] = params[key]
+
+            feat_params.append(new_params)
+        return feat_params
+
 
 class LeastSquares(Model):
+    inner_model = linear_model.LinearRegression
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
             feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", None, \
                 preprocess_y, split, path = path)
         self.feat_sel = feat_sel
-        if feat_sel:
+        if feat_sel is not None:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
@@ -264,13 +281,14 @@ class LeastSquares(Model):
 
 class RidgeRegression(Model):
     prefix = 'ridge'
+    inner_model = linear_model.Ridge
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
             feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", \
                 None, preprocess_y, split, path = path)
         self.feat_sel = feat_sel
-        if feat_sel:
+        if feat_sel is not None:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
@@ -303,6 +321,7 @@ class RidgeRegression(Model):
 class LassoRegression(Model):
     prefix = 'lasso'
     has_feat_imp = True
+    inner_model = linear_model.Lasso
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, max_iter = 3000, parameters = {}, \
             feat_sel = None, feat_params = [], path = ''):
@@ -310,7 +329,7 @@ class LassoRegression(Model):
                 None, preprocess_y, split, path = path)
         self.max_iter = max_iter
         self.feat_sel = feat_sel
-        if feat_sel:
+        if feat_sel is not None:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
@@ -356,25 +375,12 @@ class LassoRegression(Model):
     def get_dropped_columns(self):
         return self.all_cols[np.where(self.best_coeffs == 0)[0]]
 
-    def generate_feat_params(self):
-        feat_params = []
-        for i in range(self.cv_obj.n_splits):
-            idx_best_params = np.argmin(self.results[f'test{i}_score'].to_numpy())
-            params = self.results['params'].iloc[idx_best_params]
-
-            # set new params (with feature_selection)
-            new_params = {}
-            for key in params:
-                new_params[f"feature_selection__{key.replace(self.prefix, 'estimator')}"] = params[key]
-
-            feat_params.append(new_params)
-        return feat_params
-
     def generate_text_md(self):
         return self.generate_type1_text()
 
 class SVR(Model):
     prefix = 'svr'
+    inner_model = svm.SVR
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
             feat_params = [], path = ''):
@@ -382,7 +388,7 @@ class SVR(Model):
                 None, preprocess_y, split, path = path)
         # hyperparameters: kernel, C
         self.feat_sel = feat_sel
-        if feat_sel:
+        if feat_sel is not None:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
@@ -423,13 +429,14 @@ class SVR(Model):
 
 class KNNRegression(Model):
     prefix = 'kneighborsregressor'
+    inner_model = neighbors.KNeighborsRegressor
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
             feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", \
                 None, preprocess_y, split, path = path)
         self.feat_sel = feat_sel
-        if feat_sel:
+        if feat_sel is not None:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
@@ -467,13 +474,14 @@ class KNNRegression(Model):
 class RandomForestRegression(Model):
     prefix = 'randomforestregressor'
     has_feat_imp = True
+    inner_model = lambda :ensemble.RandomForestRegressor(bootstrap = True, oob_score = True)
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
             feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", \
                 None, preprocess_y, split, path = path)
         self.feat_sel = feat_sel
-        if feat_sel: # note you shouldn't be using this (not recommended)
+        if feat_sel is not None: # note you shouldn't be using this (not recommended)
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
@@ -529,15 +537,16 @@ class RandomForestRegression(Model):
         with open(self.paths['text_md'], 'r') as f:
             whole_text = f.read()
             all_strs = []
-            if self.feat_sel:
+            if self.feat_sel is not None:
                 all_strs.append(f"{type(self.feat_sel).__name}")
             all_strs += [f"{self.score():.4f}", f"{self.best_params()}", f"{self.path}"]
-            all_strs += all_strs[-2:]
+            all_strs += all_strs[-1:]
             text = whole_text.format(*all_strs)
         return text
 class GradientBoostedTreeRegression(Model):
     has_feat_imp = True
     prefix = 'xgbregressor'
+    inner_model = xgb.XGBRegressor
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
             feat_params = [], path = ''):
@@ -549,7 +558,7 @@ class GradientBoostedTreeRegression(Model):
                 f'{self.prefix}__max_depth': [2, 3, 4, 5], \
                 f'{self.prefix}__learning_rate': [0.01, 0.05, 0.1]}
         self.feat_sel = feat_sel
-        if feat_sel:
+        if feat_sel is not None:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
@@ -680,6 +689,27 @@ class TabNetRegression(Model):
         def predict(self, X):
             return self.tabnet.predict(self.pipeline.transform(X))
 
+def feat_selection_improvement(path, name, orig_models, new_models):
+    changes, labels = [], []
+    plt.title(f"Improvement when using {name} selection")
+    for model in orig_models:
+        chosen_model = None
+        for new_model in new_models:
+            if type(model) == type(new_model):
+                chosen_model = new_model
+                break
+        if chosen_model:
+            change = (model.results['mean_test_score'] - chosen_model.results['mean_test_score'])\
+                    .to_numpy().flatten()
+            changes.append(change)
+            labels.append(type(model).__name__)
+    plt.boxplot(changes)
+    plt.xticks(ticks = list(range(1, len(labels) + 1)), labels = ['\n'.join(wrap(elem, 5)) for elem in labels])
+    plt.hlines(0, 0.5, len(labels) + 0.5)
+    plt.ylabel("CV MSE Improvement (+ = better)")
+    plt.savefig(f"{path}{name}_featsel_improve.png")
+    plt.close()
+
 conf_to_models = {
     'LINEAREG': LeastSquares,
     'RIDGEREG': RidgeRegression,
@@ -719,7 +749,7 @@ def read_config(filepath):
     return selected_models, fin
 
 import nbformat as nbf
-def generate_phase_two_jupyter(path, models, feat_imps):
+def generate_phase_two_jupyter(path, models, feat_imps, names):
     text1 = "# Phase Two (Preliminary Models)\n"
     cells = [nbf.v4.new_markdown_cell(text1)]
     with open('analyze_models/start_code.py', 'r') as f:
@@ -729,8 +759,16 @@ def generate_phase_two_jupyter(path, models, feat_imps):
         cells += [nbf.v4.new_markdown_cell(model.generate_text_md()), \
                 nbf.v4.new_code_cell(model.generate_code_md())]
 
+    cells.append(nbf.v4.new_markdown_cell("# Phase Three (Feature Selection)\n"))
+
     with open('analyze_models/feature_importances.py', 'r') as f:
         cells.append(nbf.v4.new_code_cell(f.read().format(f'{path}feat_imp.csv')[:-1]))
+
+    for name in names:
+        cells.append(nbf.v4.new_markdown_cell(f"![title]({path}{name}_featsel_improve.png)"))
+
+    cells.append(nbf.v4.new_code_cell(f"all_results = pd.read_csv('{path}all_results.csv')\n"))
+    # cells.append(nbf.v4.new_markdown_cell(f"![title]({path}RandomForest_featsel_improve.png)"))
 
     nb = nbf.v4.new_notebook()
     nb['cells'] = cells
@@ -765,30 +803,44 @@ if __name__ == "__main__":
 
     # running models/saving preliminary information
     models, feat_imps = [], []
-    feat_params_lasso = []
+    feat_params, names, feat_classes = [], [], []
     for idx, reg_class in enumerate(selected_models):
         rc = reg_class(res, colnames, column, preprocess_y = np.log, parameters = \
                 hyper_params[idx], cv = cv, path = f"{end_path}")
-        if reg_class == LassoRegression:
-            feat_params_lasso = rc.generate_feat_params()
+        if reg_class == LassoRegression or reg_class == RandomForestRegression:
+            feat_params.append(rc.generate_feat_params())
+            names.append(reg_class.__name__)
+            feat_classes.append(reg_class)
         if save:
             rc.save()
         if reg_class.has_feat_imp:
             feat_imps.append(rc.get_feature_importances())
         models.append(rc)
-    # LASSO feature selection
-    # lasso_models = []
-    # for idx, reg_class in enumerate(selected_models):
-    #     if reg_class is not GradientBoostedTreeRegression and reg_class is not RandomForestRegression \
-    #             and reg_class is not LassoRegression:
-    #         rc = reg_class(res, colnames, column , preprocess_y = np.log, parameters = \
-    #                 hyper_params[idx], cv = cv, feat_sel = linear_model.Lasso(), feat_params = \
-    #                 feat_params_lasso)
-    #         if save:
-    #             rc.save(f"{end_path}{type(rc).__name__}")
-    #         lasso_models.append(rc)
 
-    # feat_imps = pd.concat(feat_imps, axis = 1)
-    # feat_imps.to_csv(f"{end_path}feat_imp.csv", index = False)
+    # feature selection
+    feat_models = []
+    for selector_idx, feat_params_selector in enumerate(feat_params):
+        curr_models = []
+        for idx, reg_class in enumerate(selected_models):
+            if reg_class is not GradientBoostedTreeRegression and reg_class is not RandomForestRegression \
+                    and reg_class is not LassoRegression:
+                rc = reg_class(res, colnames, column , preprocess_y = np.log, parameters = \
+                        hyper_params[idx], cv = cv, feat_sel = feat_classes[selector_idx].inner_model(),\
+                        feat_params = feat_params_selector, path = f"{end_path}")
+                if save:
+                    rc.save()
+                curr_models.append(rc)
+        feat_models.append(curr_models)
+        feat_selection_improvement(end_path, names[selector_idx], models, curr_models)
+
+    all_results = [x.results for x in models]
+    for list_of_models in feat_models:
+        for model in list_of_models:
+            all_results.append(model.results)
+    all_results = pd.concat(all_results, axis = 0)
+    all_results.to_csv(f"{end_path}all_results.csv", index = False)
+
+    feat_imps = pd.concat(feat_imps, axis = 1)
+    feat_imps.to_csv(f"{end_path}feat_imp.csv", index = False)
     # generate_phase_two_jupyter(end_path, models + lasso_models)
-    generate_phase_two_jupyter(end_path, models, feat_imps)
+    generate_phase_two_jupyter(end_path, models, feat_imps, names)
