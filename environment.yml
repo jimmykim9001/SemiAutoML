@@ -1,0 +1,19 @@
+name: autoproject
+channels: defaults
+dependencies:
+  - python=3.7
+  - jupyterlab
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - pytorch
+  - torchvision
+  - cudatoolkit=10.2
+  - pip
+  - pip:
+      - auto-sklearn
+      - xgboost
+      - pytorch-tabnet
+# curl https://raw.githubusercontent.com/automl/auto-sklearn/master/requirements.txt | xargs -n 1 -L 1 pip install
