@@ -1,5 +1,5 @@
 import numpy as np, matplotlib.pyplot as plt, pandas as pd, xgboost as xgb
-import warnings, itertools
+import warnings, itertools, pickle
 from sklearn.model_selection import train_test_split, cross_val_score, \
         GridSearchCV, KFold
 # from sklearn.linear_model import LinearRegression
@@ -10,6 +10,7 @@ from sklearn.pipeline import make_pipeline, Pipeline
 from textwrap import wrap
 from IPython import embed
 from pytorch_tabnet.tab_model import TabNetRegressor
+from joblib import dump, load
 
 
 def remove_outliers(x):
@@ -115,12 +116,13 @@ class Model:
     prefix = ''
     def __init__(self, df, cols, ycol, warn_cols = 100, save_cols = [], \
             str_action = 'dummies', preprocess_x = None, preprocess_y = None, \
-            split = (0.7, 0.2, 0.1), cv = 5):
+            split = (0.7, 0.2, 0.1), cv = 5, path = ''):
         assert(len(split) == 3)
         self.cv = cv
         self.split = split
         self.cols = cols
         self.cv_obj = None
+        self.path = f"{path}{type(self).__name__}"
         self.df = df.loc[df[cols].dropna().index][cols + [ycol]] # remove na values only by cols used
 
         self.Y = self.df[ycol].to_numpy()
@@ -180,60 +182,83 @@ class Model:
         else:
             raise Exception("Results has not been creataed")
 
-    def generate_type1_text(self, path):
+    def generate_type1_text(self):
         text = ""
         if not self.feat_sel:
             with open(f'analyze_models/{type(self).__name__}.md', 'r') as f:
                 whole_text = f.read()
                 all_strs = [f"{self.score():.4f}", f"{self.best_params()}", \
-                        f"{path}", f"{type(self).__name__}"]
+                        f"{self.path}"]
                 text = whole_text.format(*all_strs)
         else:
             with open(f'analyze_models/{type(self).__name__}Feat.md', 'r') as f:
                 whole_text = f.read()
                 all_strs = [f"{type(self.feat_sel).__name__}", f"{self.score():.4f}", f"{self.best_params()}", \
-                        f"{path}", f"{type(self).__name__}"]
+                        f"{self.path}"]
                 text = whole_text.format(*all_strs)
         return text
+
+    def generate_code_md(self):
+        with open("analyze_models/code_md.py", "r") as f:
+            return f.read().format(self.path, self.path)[:-1]
+
+    def set_paths(self):
+        if self.feat_sel == None:
+            self.paths = {
+                'text_md': f'analyze_models/{type(self).__name__}.md',
+                'results': f'{self.path}_cvresults.csv',
+                'hyperparam':  f'{self.path}_hyperparam.png',
+                'feat_imp': f'{self.path}_feature_importance.png',
+                'estimator': f'{self.path}_bestestimator.joblib',
+                'history': f'{self.path}_history.png'
+            }
+        else:
+            self.paths = {
+                'text_md': f'analyze_models/{type(self).__name__}Feat.md',
+                'results': f'{self.path}_feat_cvresults.csv',
+                'hyperparam':  f'{self.path}_feat_hyperparam.png',
+                'feat_imp': f'{self.path}_feature_importance_feat.png',
+                'estimator': f'{self.path}_feat_bestestimator.joblib',
+                'history': f'{self.path}_feat_history.png'
+            }
 
 
 class LeastSquares(Model):
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
-            feat_params = []):
+            feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", None, \
-                preprocess_y, split)
+                preprocess_y, split, path = path)
+        self.feat_sel = feat_sel
         if feat_sel:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
                 ('least_squares', linear_model.LinearRegression())
             ])
-            self.feat_sel = feat_sel
         else:
             self.pipeline = linear_model.LinearRegression()
-            self.feat_sel = None
+        self.set_paths()
 
         self.cv_obj = ModifiedKFoldSearch(self.pipeline, cv, parameters, feat_params = feat_params)
         self.results = self.cv_obj.fit(self.Xtrain, self.Ytrain.flatten())
 
-    def save(self, path):
-        pass
+    def save(self):
+        dump(self.cv_obj.best_estimator_, self.paths['estimator'])
+        self.results.to_csv(self.paths['results'])
 
     def score(self):
         return np.min(self.results['mean_test_score'])
 
-    def generate_text_md(self, path):
+    def generate_text_md(self):
         text = ""
-        if not self.feat_sel:
-            with open(f'analyze_models/{type(self).__name__}.md', 'r') as f:
-                whole_text = f.read()
-                text = whole_text.replace("{}", f"{self.score():.4f}")
-        else:
-            with open(f'analyze_models/{type(self).__name__}Feat.md', 'r') as f:
-                whole_text = f.read()
-                formats = [f"{self.feat_sel}", f"{self.score():.4f}"]
-                text = whole_text.format(*formats)
+        format_strs = [f"{self.score():.4f}"]
+        with open(self.paths['text_md'], 'r') as f:
+            if self.feat_sel:
+                formats = [f"{type(self.feat_sel).__name__}", f"{self.score():.4f}"]
+                text = f.read().format(*formats)
+            else:
+                text = f.read().replace("{}", f"{self.score():.4f}")
         return text
 
 
@@ -241,63 +266,62 @@ class RidgeRegression(Model):
     prefix = 'ridge'
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
-            feat_params = []):
+            feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", \
-                None, preprocess_y, split)
+                None, preprocess_y, split, path = path)
+        self.feat_sel = feat_sel
         if feat_sel:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
                 (self.prefix, linear_model.Ridge())
             ])
-            self.feat_sel = feat_sel
         else:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()), 
                 (self.prefix, linear_model.Ridge())
             ])
-            self.feat_sel = None
 
+        self.set_paths()
         self.cv_obj = ModifiedKFoldSearch(self.pipeline, cv, parameters, feat_params = feat_params)
         self.results = self.cv_obj.fit(self.Xtrain, self.Ytrain.flatten())
 
-    def save(self, path):
+    def save(self):
         plt.title("RidgeRegression: Effect of Lambda on CV MSE")
         plt.plot(self.get_param('alpha'), self.results['mean_test_score'])
         plt.xscale('log')
         plt.xlabel("log lambda")
         plt.ylabel("CV MSE")
-        if self.feat_sel:
-            plt.savefig(f"{path}_feat_hyperparam.png")
-        else:
-            plt.savefig(f"{path}_hyperparam.png")
+        plt.savefig(self.paths['hyperparam'])
+        self.results.to_csv(self.paths['results'])
+        dump(self.cv_obj.best_estimator_, self.paths['estimator'])
         plt.close()
 
-    def generate_text_md(self, path):
-        return self.generate_type1_text(path)
+    def generate_text_md(self):
+        return self.generate_type1_text()
 
 class LassoRegression(Model):
     prefix = 'lasso'
     has_feat_imp = True
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, max_iter = 3000, parameters = {}, \
-            feat_sel = None, feat_params = []):
+            feat_sel = None, feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", \
-                None, preprocess_y, split)
+                None, preprocess_y, split, path = path)
         self.max_iter = max_iter
+        self.feat_sel = feat_sel
         if feat_sel:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
                 (self.prefix, linear_model.Lasso())
             ])
-            self.feat_sel = feat_sel
         else:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 (self.prefix, linear_model.Lasso(max_iter = self.max_iter))
             ])
-            self.feat_sel = None
+        self.set_paths()
 
         self.cv_obj = ModifiedKFoldSearch(self.pipeline, cv, parameters, feat_params = feat_params)
         self.results = self.cv_obj.fit(self.Xtrain, self.Ytrain.flatten())
@@ -305,16 +329,15 @@ class LassoRegression(Model):
         self.all_cols = np.array(self.df.columns)
         self.best_coeffs = self.cv_obj.best_estimator_['lasso'].coef_
 
-    def save(self, path):
+    def save(self):
         plt.title("Lasso: Effect of Penalization Factor (lambda) on CV MSE")
         plt.plot(self.get_param('alpha'), self.results['mean_test_score'])
         plt.xscale('log')
         plt.xlabel("lambda")
         plt.ylabel("CV MSE")
-        if self.feat_sel:
-            plt.savefig(f"{path}_feat_hyperparam.png")
-        else:
-            plt.savefig(f"{path}_hyperparam.png")
+        plt.savefig(self.paths['hyperparam'])
+        self.results.to_csv(self.paths['results'])
+        dump(self.cv_obj.best_estimator_, self.paths['estimator'])
         plt.close()
 
     def get_feature_importances(self):
@@ -347,17 +370,18 @@ class LassoRegression(Model):
             feat_params.append(new_params)
         return feat_params
 
-    def generate_text_md(self, path):
-        return self.generate_type1_text(path)
+    def generate_text_md(self):
+        return self.generate_type1_text()
 
 class SVR(Model):
     prefix = 'svr'
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
-            feat_params = []):
+            feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", \
-                None, preprocess_y, split)
+                None, preprocess_y, split, path = path)
         # hyperparameters: kernel, C
+        self.feat_sel = feat_sel
         if feat_sel:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
@@ -369,11 +393,11 @@ class SVR(Model):
                 ('preprocessing', MinMaxScaler()),
                 (self.prefix, svm.SVR()) 
             ])
-        self.feat_sel = feat_sel
+        self.set_paths()
         self.cv_obj = ModifiedKFoldSearch(self.pipeline, cv, parameters, feat_params = feat_params)
         self.results = self.cv_obj.fit(self.Xtrain, self.Ytrain.flatten())
 
-    def save(self, path):
+    def save(self):
         kernels = self.get_param('kernel').unique()
         gammas = self.get_param('gamma').unique()
         fig, axes = plt.subplots(1, 2, figsize = (10, 5), sharey = True)
@@ -389,42 +413,41 @@ class SVR(Model):
                 axes[idx].plot(self.get_param('C')[selector], \
                         self.results[selector]['mean_test_score'], label = f"gamma {gamma}")
             axes[idx].legend()
-        if self.feat_sel:
-            plt.savefig(f"{path}_feat_hyperparam.png")
-        else:
-            plt.savefig(f"{path}_hyperparam.png")
+        plt.savefig(self.paths['hyperparam'])
+        self.results.to_csv(self.paths['results'])
+        dump(self.cv_obj.best_estimator_, self.paths['estimator'])
         plt.close()
 
-    def generate_text_md(self, path):
-        return self.generate_type1_text(path)
+    def generate_text_md(self):
+        return self.generate_type1_text()
 
 class KNNRegression(Model):
     prefix = 'kneighborsregressor'
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
-            feat_params = []):
+            feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", \
-                None, preprocess_y, split)
+                None, preprocess_y, split, path = path)
+        self.feat_sel = feat_sel
         if feat_sel:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
                 (self.prefix, neighbors.KNeighborsRegressor()) 
             ])
-            self.feat_sel = feat_sel
         else:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 (self.prefix, neighbors.KNeighborsRegressor())
             ])
-            self.feat_sel = None
+        self.set_paths()
         self.cv_obj = ModifiedKFoldSearch(self.pipeline, cv, parameters, feat_params = feat_params)
         self.results = self.cv_obj.fit(self.Xtrain, self.Ytrain.flatten())
 
         #TODO: you should implement mahalanois distance this requires you to write
         # your own Cross Validation function however
 
-    def save(self, path):
+    def save(self):
         weights = self.get_param('weights').unique()
         plt.ylabel("CV MSE")
         plt.xlabel("K")
@@ -434,40 +457,38 @@ class KNNRegression(Model):
             plt.plot(self.get_param('n_neighbors')[selector], \
                     self.results[selector]['mean_test_score'], label = weight)
         plt.legend()
-        if self.feat_sel:
-            plt.savefig(f"{path}_feat_hyperparam.png")
-        else:
-            plt.savefig(f"{path}_hyperparam.png")
+        plt.savefig(self.paths['hyperparam'])
+        self.results.to_csv(self.paths['results'])
+        dump(self.cv_obj.best_estimator_, self.paths['estimator'])
         plt.close()
-    def generate_text_md(self, path):
-        return self.generate_type1_text(path)
+    def generate_text_md(self):
+        return self.generate_type1_text()
 
 class RandomForestRegression(Model):
     prefix = 'randomforestregressor'
     has_feat_imp = True
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
-            feat_params = []):
+            feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", \
-                None, preprocess_y, split)
+                None, preprocess_y, split, path = path)
+        self.feat_sel = feat_sel
         if feat_sel: # note you shouldn't be using this (not recommended)
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
                 (self.prefix, ensemble.RandomForestRegressor(bootstrap = True, oob_score = True)) 
             ])
-            self.feat_sel = feat_sel
         else:
-            # self.pipeline = ensemble.RandomForestRegressor(bootstrap = True, oob_score = True)
             self.pipeline = Pipeline([
                 (self.prefix, ensemble.RandomForestRegressor(bootstrap = True, oob_score = True))
             ])
-            self.feat_sel = None
+        self.set_paths()
         self.cv_obj = ModifiedKFoldSearch(self.pipeline, cv, parameters, feat_params = feat_params)
         self.results = self.cv_obj.fit(self.Xtrain, self.Ytrain.flatten())
         #TODO: rewrite function to calculate OOB for cvs
 
-    def save(self, path, n = 10):
+    def save(self, n = 10):
         max_features = self.get_param('max_features').unique()
         plt.title("Random Forest Hyperparameters")
         plt.xlabel("Number of Estimators")
@@ -477,24 +498,21 @@ class RandomForestRegression(Model):
             plt.plot(self.get_param('n_estimators')[selector], \
                     self.results[selector]['mean_test_score'], label = mf)
         plt.legend()
-        if self.feat_sel:
-            plt.savefig(f"{path}_feat_hyperparam.png")
-        else:
-            plt.savefig(f"{path}_hyperparam.png")
+        plt.savefig(self.paths['hyperparam'])
+        self.results.to_csv(self.paths['results'])
+        dump(self.cv_obj.best_estimator_, self.paths['estimator'])
         plt.close()
 
         plt.title("Feature Importance")
         plt.ylabel("Feature Importance (Gini)")
         all_cols = list(self.df.columns)
+
         # TODO: fix this garbage
         feat_imp = np.sort(self.cv_obj.best_estimator_[self.prefix].feature_importances_)[::-1][:n]
         idx = self.cv_obj.best_estimator_[self.prefix].feature_importances_.argsort()[::-1][:n]
         plt.bar(list(range(0, n)), feat_imp)
         plt.xticks(list(range(0, n)), ['\n'.join(wrap(all_cols[elem], 5)) for elem in idx])
-        if self.feat_sel:
-            plt.savefig(f"{path}_feature_importance_feat.png")
-        else:
-            plt.savefig(f"{path}_feature_importance.png")
+        plt.savefig(self.paths['feat_imp'])
         plt.close()
 
     def get_feature_importances(self):
@@ -506,52 +524,46 @@ class RandomForestRegression(Model):
         importance_df.set_index('column', inplace = True)
         return importance_df
 
-    def generate_text_md(self, path):
+    def generate_text_md(self):
         text = ""
-        if self.feat_sel:
-            with open(f'analyze_models/{type(self).__name__}Feat.md', 'r') as f:
-                whole_text = f.read()
-                all_strs = [f"{type(self.feat_sel).__name__}", f"{self.score():.4f}", f"{self.best_params()}", \
-                        f"{path}", f"{type(self).__name__}"]
-                all_strs += all_strs[-2:]
-                text = whole_text.format(*all_strs)
-        else:
-            with open(f'analyze_models/{type(self).__name__}.md', 'r') as f:
-                whole_text = f.read()
-                all_strs = [f"{self.score():.4f}", f"{self.best_params()}", \
-                        f"{path}", f"{type(self).__name__}"]
-                all_strs += all_strs[-2:]
-                text = whole_text.format(*all_strs)
+        with open(self.paths['text_md'], 'r') as f:
+            whole_text = f.read()
+            all_strs = []
+            if self.feat_sel:
+                all_strs.append(f"{type(self.feat_sel).__name}")
+            all_strs += [f"{self.score():.4f}", f"{self.best_params()}", f"{self.path}"]
+            all_strs += all_strs[-2:]
+            text = whole_text.format(*all_strs)
         return text
 class GradientBoostedTreeRegression(Model):
     has_feat_imp = True
     prefix = 'xgbregressor'
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
-            feat_params = []):
+            feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", \
-                None, preprocess_y, split)
+                None, preprocess_y, split, path = path)
         self.dtrain = xgb.DMatrix(self.Xtrain, label = self.Ytrain)
 
         self.parameters = {f'{self.prefix}__n_estimators': [50, 80, 100, 200, 300, 500], \
                 f'{self.prefix}__max_depth': [2, 3, 4, 5], \
                 f'{self.prefix}__learning_rate': [0.01, 0.05, 0.1]}
+        self.feat_sel = feat_sel
         if feat_sel:
             self.pipeline = Pipeline([
                 ('preprocessing', MinMaxScaler()),
                 ('feature_selection', SelectFromModel(feat_sel)),
                 (self.prefix, xgb.XGBRegressor())
             ])
-            self.feat_sel = feat_sel
         else:
             self.pipeline = Pipeline([
                 (self.prefix, xgb.XGBRegressor()) 
             ])
-            self.feat_sel = None
+        self.set_paths()
         self.cv_obj = ModifiedKFoldSearch(self.pipeline, cv, self.parameters, feat_params = feat_params)
         self.results = self.cv_obj.fit(self.Xtrain, self.Ytrain.flatten())
 
-    def save(self, path):
+    def save(self):
         n_rows = int(len(self.parameters[f'{self.prefix}__learning_rate']) / 2 + 0.5)
         fig, axes = plt.subplots(n_rows, 2, figsize = (10, n_rows * 5), sharex = True)
         fig.suptitle("GB Tree Hyperparameters")
@@ -560,7 +572,8 @@ class GradientBoostedTreeRegression(Model):
         x_vals = self.get_param('n_estimators').unique()
         for lr_idx, lr in enumerate(all_lrs):
             res = self.results[self.get_param('learning_rate') == lr]
-            res = res[look_at].groupby([f'param_{self.prefix}__max_depth'])['mean_test_score'].apply(list).reset_index()
+            res = res[look_at].groupby([f'param_{self.prefix}__max_depth'])\
+                    ['mean_test_score'].apply(list).reset_index()
             ax = axes[lr_idx // 2, lr_idx % 2] 
             ax.set_title(f"lr{lr}")
             all_ys = []
@@ -573,14 +586,14 @@ class GradientBoostedTreeRegression(Model):
             ax.set_xlabel("Number of Estimators")
             ax.set_ylabel("CV MSE")
             ax.set_ylim(remove_outliers(np.array(all_ys).flatten()))
-        if self.feat_sel:
-            plt.savefig(f"{path}_feat_hyperparam.png")
-        else:
-            plt.savefig(f"{path}_hyperparam.png")
+        plt.savefig(self.paths['hyperparam'])
+        self.results.to_csv(self.paths['results'])
+        dump(self.cv_obj.best_estimator_, self.paths['estimator'])
         plt.close()
 
         #TODO: this assumes we're only looking at param_max_depth and n_estimators
         #TODO: this assumes that n_estimators is ordered 
+        #TODO: fix this garbage
 
     def get_feature_importances(self):
         pd_dict = {
@@ -591,22 +604,23 @@ class GradientBoostedTreeRegression(Model):
         importance_df.set_index('column', inplace = True)
         return importance_df
 
-    def generate_text_md(self, path):
-        return self.generate_type1_text(path)
+    def generate_text_md(self):
+        return self.generate_type1_text()
 
 class TabNetRegression(Model):
     prefix = 'tabnet'
     def __init__(self, df, cols, ycol, warn_cols = 100, preprocess_y = None, \
             split = (0.7, 0.2, 0.1), cv = 5, parameters = {}, feat_sel = None, \
-            feat_params = []):
+            feat_params = [], path = ''):
         super().__init__(df, cols, ycol, warn_cols, [], "dummies", \
-                None, preprocess_y, split)
+                None, preprocess_y, split, path = path)
         self.feat_sel = feat_sel
+        self.set_paths()
         self.cv_obj = ModifiedKFoldSearch(TabNetRegression.TabNetModel(feat_sel = feat_sel), 5,\
                 parameters, input_valid = True, feat_params = feat_params)
         self.results = self.cv_obj.fit(self.Xtrain, self.Ytrain)
 
-    def save(self, path):
+    def save(self):
         history = self.cv_obj.best_estimator_.tabnet.history
         fig, axes = plt.subplots(1, 2, figsize = (10, 5))
         fig.suptitle("History")
@@ -620,19 +634,16 @@ class TabNetRegression(Model):
         axes[1].legend()
         axes[1].set_xlabel("Epochs")
         axes[1].set_ylabel("Metric")
-        if self.feat_sel:
-            plt.savefig(f"{path}_feat_history.png")
-        else:
-            plt.savefig(f"{path}_history.png")
+        plt.savefig(self.paths['history'])
+        self.results.to_csv(self.paths['results'])
+        pickle.dump(self.cv_obj.best_estimator_, open(self.paths['estimator'], 'wb'))
         plt.close()
 
-    def generate_text_md(self, path):
-        return self.generate_type1_text(path)
+    def generate_text_md(self):
+        return self.generate_type1_text()
 
-    # this needs set_params function
     class TabNetModel:
         def __init__(self, feat_sel = None):
-            # self.scaler = MinMaxScaler()
             if feat_sel is not None:
                 self.pipeline = Pipeline([
                     ('preprocessing', MinMaxScaler()),
@@ -642,7 +653,6 @@ class TabNetRegression(Model):
                 self.pipeline = Pipeline([
                     ('preprocessing', MinMaxScaler())
                 ])
-            # self.tabnet = TabNetRegressor(**params)
             self.feat_sel = feat_sel
             self.params = {'feat_sel': feat_sel}
         def set_params(self, **kwargs):
@@ -657,7 +667,6 @@ class TabNetRegression(Model):
             self.tabnet = TabNetRegressor(**tabnet_params)
             self.pipeline.set_params(**proc_params)
             self.params = {**tabnet_params, **proc_params}
-            # self.params['feat_sel'] = kwargs['feat_sel']
             return self
         def get_params(self, deep = False):
             return self.params
@@ -684,7 +693,7 @@ conf_to_models = {
 
 def read_config(filepath):
     config = configparser.ConfigParser()
-    config.optionxform = str
+    config.optionxform = str # keep uppercase letters
     config.read(filepath)
 
     selected_models = [conf_to_models[x] for x in config.sections()]
@@ -710,13 +719,21 @@ def read_config(filepath):
     return selected_models, fin
 
 import nbformat as nbf
-# you should move these to inside the model
-def generate_phase_two_jupyter(path, models):
+def generate_phase_two_jupyter(path, models, feat_imps):
     text1 = "# Phase Two (Preliminary Models)\n"
+    cells = [nbf.v4.new_markdown_cell(text1)]
+    with open('analyze_models/start_code.py', 'r') as f:
+        cells.append(nbf.v4.new_code_cell(f.read()[:-1]))
+
     for model in models:
-        text1 += model.generate_text_md(path)
+        cells += [nbf.v4.new_markdown_cell(model.generate_text_md()), \
+                nbf.v4.new_code_cell(model.generate_code_md())]
+
+    with open('analyze_models/feature_importances.py', 'r') as f:
+        cells.append(nbf.v4.new_code_cell(f.read().format(f'{path}feat_imp.csv')[:-1]))
+
     nb = nbf.v4.new_notebook()
-    nb['cells'] = [nbf.v4.new_markdown_cell(text1)]
+    nb['cells'] = cells
     nbf.write(nb, 'test.ipynb')
 
 import argparse, os, datetime, configparser
@@ -751,26 +768,27 @@ if __name__ == "__main__":
     feat_params_lasso = []
     for idx, reg_class in enumerate(selected_models):
         rc = reg_class(res, colnames, column, preprocess_y = np.log, parameters = \
-                hyper_params[idx], cv = cv)
+                hyper_params[idx], cv = cv, path = f"{end_path}")
         if reg_class == LassoRegression:
             feat_params_lasso = rc.generate_feat_params()
         if save:
-            rc.save(f"{end_path}{type(rc).__name__}")
+            rc.save()
         if reg_class.has_feat_imp:
             feat_imps.append(rc.get_feature_importances())
         models.append(rc)
-
     # LASSO feature selection
-    lasso_models = []
-    for idx, reg_class in enumerate(selected_models):
-        if reg_class is not GradientBoostedTreeRegression and reg_class is not RandomForestRegression \
-                and reg_class is not LassoRegression:
-            rc = reg_class(res, colnames, column , preprocess_y = np.log, parameters = \
-                    hyper_params[idx], cv = cv, feat_sel = linear_model.Lasso(), feat_params = \
-                    feat_params_lasso)
-            if save:
-                rc.save(f"{end_path}{type(rc).__name__}")
-            lasso_models.append(rc)
+    # lasso_models = []
+    # for idx, reg_class in enumerate(selected_models):
+    #     if reg_class is not GradientBoostedTreeRegression and reg_class is not RandomForestRegression \
+    #             and reg_class is not LassoRegression:
+    #         rc = reg_class(res, colnames, column , preprocess_y = np.log, parameters = \
+    #                 hyper_params[idx], cv = cv, feat_sel = linear_model.Lasso(), feat_params = \
+    #                 feat_params_lasso)
+    #         if save:
+    #             rc.save(f"{end_path}{type(rc).__name__}")
+    #         lasso_models.append(rc)
 
-    feat_imps = pd.concat(feat_imps, axis = 1)
-    generate_phase_two_jupyter(end_path, models + lasso_models)
+    # feat_imps = pd.concat(feat_imps, axis = 1)
+    # feat_imps.to_csv(f"{end_path}feat_imp.csv", index = False)
+    # generate_phase_two_jupyter(end_path, models + lasso_models)
+    generate_phase_two_jupyter(end_path, models, feat_imps)
